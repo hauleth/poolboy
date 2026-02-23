@@ -186,8 +186,6 @@ code_change(_OldVsn, State, _Extra) ->
 - `worker_module`: the module that represents the workers
 - `size`: maximum pool size
 - `max_overflow`: maximum number of workers created if pool is empty
-- `strategy`: `lifo` or `fifo`, determines whether checked in workers should be
-  placed first or last in the line of available workers. So, `lifo` operates like a traditional stack; `fifo` like a queue. Default is `lifo`.
 - `idle_timeout`: time in milliseconds to keep idle overflow workers alive before
   dismissing them. Default is `300000` (5 minutes).
 - `reclaim_strategy`: `checkin` or `kill`, determines what happens to a worker

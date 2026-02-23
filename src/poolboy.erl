@@ -12,8 +12,6 @@
 
 -define(DEFAULT_TIMEOUT, 5000).
 
--type pid_queue() :: queue:queue().
-
 -type pool() ::
     Name :: (atom() | pid()) |
     {Name :: atom(), node()} |
@@ -26,13 +24,12 @@
 
 -record(state, {
     supervisor :: undefined | pid(),
-    workers :: undefined | pid_queue(),
-    waiting :: pid_queue(),
+    workers :: undefined | [pid()],
+    waiting :: queue:queue({gen_server:from(), term(), reference()}),
     monitors :: ets:tid(),
     size = 5 :: non_neg_integer(),
     overflow = 0 :: non_neg_integer(),
     max_overflow = 10 :: non_neg_integer(),
-    strategy = lifo :: lifo | fifo,
     idle_workers = #{} :: map(),
     idle_timeout = timer:minutes(5) :: non_neg_integer(),
     inactivity_timeout = false :: false | pos_integer(),
@@ -152,13 +149,13 @@ handle_cast({cancel_waiting, CRef}, State) ->
             NewState = handle_checkin(Pid, State),
             {noreply, NewState};
         [] ->
-            Cancel = fun({_, Ref, MRef}) when Ref =:= CRef ->
-                             demonitor(MRef, [flush]),
-                             false;
-                        (_) ->
-                             true
-                     end,
-            Waiting = queue:filter(Cancel, State#state.waiting),
+            Waiting = queue:delete_with(
+                        fun
+                            ({_From, Ref, MRef}) when Ref =:= CRef ->
+                                demonitor(MRef, [flush]),
+                                true;
+                            ({_, _, _}) -> false
+                        end, State#state.waiting),
             {noreply, State#state{waiting = Waiting}}
     end;
 
@@ -171,10 +168,9 @@ handle_call({checkout, CRef, Block}, {FromPid, _} = From, State) ->
            monitors = Monitors,
            overflow = Overflow,
            max_overflow = MaxOverflow,
-           idle_workers = IdleWorkers,
-           strategy = Strategy} = State,
-    case get_worker_with_strategy(Workers, Strategy) of
-        {{value, Pid},  Left} ->
+           idle_workers = IdleWorkers} = State,
+    case Workers of
+        [Pid | Left] ->
             {NewIdleWorkers, NewOverflow} =
                 case maps:get(Pid, IdleWorkers, undefined) of
                     undefined ->
@@ -186,13 +182,13 @@ handle_call({checkout, CRef, Block}, {FromPid, _} = From, State) ->
             MRef = erlang:monitor(process, FromPid),
             true = ets:insert(Monitors, {Pid, CRef, MRef}),
             {reply, Pid, cancel_inactivity_timer(State#state{workers = Left, idle_workers = NewIdleWorkers, overflow = NewOverflow})};
-        {empty, _Left} when MaxOverflow > 0, Overflow + map_size(IdleWorkers) < MaxOverflow ->
+        [] when MaxOverflow > 0, Overflow + map_size(IdleWorkers) < MaxOverflow ->
             {Pid, MRef} = new_worker(Sup, FromPid),
             true = ets:insert(Monitors, {Pid, CRef, MRef}),
             {reply, Pid, cancel_inactivity_timer(State#state{overflow = Overflow + 1})};
-        {empty, _Left} when Block =:= false ->
+        [] when Block =:= false ->
             {reply, full, State};
-        {empty, _Left} ->
+        [] ->
             MRef = erlang:monitor(process, FromPid),
             Waiting = queue:in({From, CRef, MRef}, State#state.waiting),
             {noreply, State#state{waiting = Waiting}}
@@ -203,7 +199,7 @@ handle_call(status, _From, State) ->
            monitors = Monitors,
            overflow = Overflow} = State,
     StateName = state_name(State),
-    {reply, {StateName, queue:len(Workers), Overflow, ets:info(Monitors, size)}, State};
+    {reply, {StateName, length(Workers), Overflow, ets:info(Monitors, size)}, State};
 handle_call(get_avail_workers, _From, State) ->
     Workers = State#state.workers,
     {reply, Workers, State};
@@ -234,7 +230,8 @@ handle_info({'DOWN', MRef, _, _, _}, State) ->
             NewState = handle_owner_down(Pid, State),
             {noreply, NewState};
         [] ->
-            Waiting = queue:filter(fun ({_, _, R}) -> R =/= MRef end, State#state.waiting),
+            Waiting = queue:delete_with(fun({_, _, Ref}) -> Ref =:= MRef end,
+                                        State#state.waiting),
             {noreply, State#state{waiting = Waiting}}
     end;
 handle_info({'EXIT', Pid, _Reason}, State) ->
@@ -256,7 +253,7 @@ handle_info({'EXIT', Pid, _Reason}, State) ->
                     NewState = State#state{workers = W, idle_workers = I},
                     {noreply, maybe_start_inactivity_timer(NewState)};
                 false ->
-                    {noreply, State#state{workers = queue:in(new_worker(Sup), W)}}
+                    {noreply, State#state{workers = [new_worker(Sup) | W]}}
             end
     end;
 
@@ -279,8 +276,7 @@ handle_info(_Info, State) ->
     {noreply, State}.
 
 terminate(_Reason, State) ->
-    Workers = queue:to_list(State#state.workers),
-    ok = lists:foreach(fun (W) -> unlink(W) end, Workers),
+    ok = lists:foreach(fun (W) -> unlink(W) end, State#state.workers),
     ok.
 
 code_change(_OldVsn, State, _Extra) ->
@@ -296,10 +292,6 @@ parse_opts([{inactivity_timeout, false} | Rest], State) ->
     parse_opts(Rest, State#state{inactivity_timeout = false});
 parse_opts([{inactivity_timeout, Timeout} | Rest], State) when is_integer(Timeout), Timeout > 0 ->
     parse_opts(Rest, State#state{inactivity_timeout = Timeout});
-parse_opts([{strategy, lifo} | Rest], State) ->
-    parse_opts(Rest, State#state{strategy = lifo});
-parse_opts([{strategy, fifo} | Rest], State) ->
-    parse_opts(Rest, State#state{strategy = fifo});
 parse_opts([{reclaim_strategy, checkin} | Rest], State) ->
     parse_opts(Rest, State#state{reclaim_strategy = checkin});
 parse_opts([{reclaim_strategy, kill} | Rest], State) ->
@@ -325,27 +317,22 @@ new_worker(Sup, FromPid) ->
     Ref = erlang:monitor(process, FromPid),
     {Pid, Ref}.
 
-get_worker_with_strategy(Workers, fifo) ->
-    queue:out(Workers);
-get_worker_with_strategy(Workers, lifo) ->
-    queue:out_r(Workers).
-
 dismiss_worker(Sup, Pid) ->
     true = unlink(Pid),
     supervisor:terminate_child(Sup, Pid).
 
 filter_worker_by_pid(Pid, Workers) ->
-    queue:filter(fun (WPid) -> WPid =/= Pid end, Workers).
+    lists:filter(fun (WPid) -> WPid =/= Pid end, Workers).
 
 prepopulate(N, _Sup) when N < 1 ->
-    queue:new();
+    [];
 prepopulate(N, Sup) ->
-    prepopulate(N, Sup, queue:new()).
+    prepopulate(N, Sup, []).
 
 prepopulate(0, _Sup, Workers) ->
     Workers;
 prepopulate(N, Sup, Workers) ->
-    prepopulate(N-1, Sup, queue:in(new_worker(Sup), Workers)).
+    prepopulate(N-1, Sup, [new_worker(Sup) | Workers]).
 
 handle_checkin(Pid, State) ->
     #state{waiting = Waiting,
@@ -360,11 +347,11 @@ handle_checkin(Pid, State) ->
         {empty, Empty} when Overflow > 0 ->
             Timer = erlang:send_after(State#state.idle_timeout, self(), {dismiss_idle, Pid}),
             NewIdleWorkers = maps:put(Pid, Timer, IdleWorkers),
-            Workers = queue:in(Pid, State#state.workers),
+            Workers = [Pid | State#state.workers],
             NewState = State#state{workers = Workers, waiting = Empty, overflow = Overflow - 1, idle_workers = NewIdleWorkers},
             maybe_start_inactivity_timer(NewState);
         {empty, Empty} ->
-            Workers = queue:in(Pid, State#state.workers),
+            Workers = [Pid | State#state.workers],
             NewState = State#state{workers = Workers, waiting = Empty, overflow = 0},
             maybe_start_inactivity_timer(NewState)
     end.
@@ -382,22 +369,22 @@ handle_worker_exit(Pid, State) ->
            overflow = Overflow} = State,
     NewIdleWorkers = remove_from_idle(Pid, IdleWorkers),
     case queue:out(State#state.waiting) of
-        {{value, {From, CRef, MRef}}, LeftWaiting} ->
+        {{value, {From, CRef, MRef}}, Left} ->
             NewWorker = new_worker(State#state.supervisor),
             true = ets:insert(Monitors, {NewWorker, CRef, MRef}),
             gen_server:reply(From, NewWorker),
-            State#state{waiting = LeftWaiting, idle_workers = NewIdleWorkers};
-        {empty, Empty} when Overflow > 0 ->
-            State#state{overflow = Overflow - 1, waiting = Empty, idle_workers = NewIdleWorkers};
-        {empty, Empty} ->
+            State#state{waiting = Left, idle_workers = NewIdleWorkers};
+        {empty, Left} when Overflow > 0 ->
+            State#state{overflow = Overflow - 1, waiting = Left, idle_workers = NewIdleWorkers};
+        {empty, Left} ->
             W = filter_worker_by_pid(Pid, State#state.workers),
-            Workers = queue:in(new_worker(Sup), W),
-            State#state{workers = Workers, waiting = Empty, idle_workers = NewIdleWorkers}
+            Workers = [new_worker(Sup) | W],
+            State#state{workers = Workers, waiting = Left, idle_workers = NewIdleWorkers}
     end.
 
 state_name(State = #state{overflow = Overflow}) when Overflow < 1 ->
     #state{max_overflow = MaxOverflow, workers = Workers} = State,
-    case queue:len(Workers) == 0 of
+    case Workers =:= [] of
         true when MaxOverflow < 1 -> full;
         true -> overflow;
         false -> ready
