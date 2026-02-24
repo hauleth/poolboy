@@ -51,12 +51,11 @@ checkout(Pool, Block) when is_boolean(Block) ->
 -spec checkout(Pool :: pool(), Block :: boolean(), Timeout :: timeout())
     -> pid() | full.
 checkout(Pool, Block, Timeout) ->
-    CRef = make_ref(),
     try
-        gen_server:call(Pool, {checkout, CRef, Block}, Timeout)
+        gen_server:call(Pool, {checkout, Block}, Timeout)
     catch
         Class:Reason:Stacktrace ->
-            gen_server:cast(Pool, {cancel_waiting, CRef}),
+            gen_server:cast(Pool, {cancel_waiting, self()}),
             erlang:raise(Class, Reason, Stacktrace)
     end.
 
@@ -162,7 +161,7 @@ handle_cast({cancel_waiting, CRef}, State) ->
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
-handle_call({checkout, CRef, Block}, {FromPid, _} = From, State) ->
+handle_call({checkout, Block}, {FromPid, _} = From, State) ->
     #state{supervisor = Sup,
            workers = Workers,
            monitors = Monitors,
@@ -180,17 +179,17 @@ handle_call({checkout, CRef, Block}, {FromPid, _} = From, State) ->
                         {maps:remove(Pid, IdleWorkers), Overflow + 1}
                 end,
             MRef = erlang:monitor(process, FromPid),
-            true = ets:insert(Monitors, {Pid, CRef, MRef}),
+            true = ets:insert(Monitors, {Pid, FromPid, MRef}),
             {reply, Pid, cancel_inactivity_timer(State#state{workers = Left, idle_workers = NewIdleWorkers, overflow = NewOverflow})};
         [] when MaxOverflow > 0, Overflow + map_size(IdleWorkers) < MaxOverflow ->
             {Pid, MRef} = new_worker(Sup, FromPid),
-            true = ets:insert(Monitors, {Pid, CRef, MRef}),
+            true = ets:insert(Monitors, {Pid, FromPid, MRef}),
             {reply, Pid, cancel_inactivity_timer(State#state{overflow = Overflow + 1})};
         [] when Block =:= false ->
             {reply, full, State};
         [] ->
             MRef = erlang:monitor(process, FromPid),
-            Waiting = queue:in({From, CRef, MRef}, State#state.waiting),
+            Waiting = queue:in({From, FromPid, MRef}, State#state.waiting),
             {noreply, State#state{waiting = Waiting}}
     end;
 
