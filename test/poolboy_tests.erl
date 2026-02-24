@@ -477,7 +477,7 @@ demonitors_when_checkout_cancelled() ->
     Self = self(),
     Pid = spawn(fun() ->
         poolboy:checkout(Pool),
-        _ = (catch poolboy:checkout(Pool, true, 1000)),
+        _ = (catch poolboy:checkout(Pool, 1000)),
         Self ! ok,
         receive ok -> ok end
     end),
@@ -491,9 +491,9 @@ demonitors_when_checkout_cancelled() ->
 default_strategy_lifo() ->
     %% Default strategy is LIFO
     {ok, Pid} = new_pool(2, 0),
-    Worker1 = poolboy:checkout(Pid),
+    Worker1 = poolboy:checkout(Pid, true),
     ok = poolboy:checkin(Pid, Worker1),
-    Worker1 = poolboy:checkout(Pid),
+    Worker1 = poolboy:checkout(Pid, 1000),
     poolboy:stop(Pid).
 
 lifo_strategy() ->
