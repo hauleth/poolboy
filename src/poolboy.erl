@@ -39,10 +39,13 @@
 
 -spec checkout(Pool :: pool()) -> pid().
 checkout(Pool) ->
-    checkout(Pool, true).
+    checkout(Pool, true, ?DEFAULT_TIMEOUT).
 
--spec checkout(Pool :: pool(), Block :: boolean()) -> pid() | full.
-checkout(Pool, Block) ->
+-spec checkout(Pool :: pool(), Block :: boolean()) -> pid() | full;
+              (Pool :: pool(), Timeout :: timeout()) -> pid() | full.
+checkout(Pool, Timeout) when is_integer(Timeout); Timeout =:= infinity ->
+    checkout(Pool, true, Timeout);
+checkout(Pool, Block) when is_boolean(Block) ->
     checkout(Pool, Block, ?DEFAULT_TIMEOUT).
 
 -spec checkout(Pool :: pool(), Block :: boolean(), Timeout :: timeout())
