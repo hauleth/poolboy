@@ -15,6 +15,18 @@ before being dismissed. This reduces churn under bursty workloads. Set the
 `idle_timeout` pool option (in milliseconds) to control how long idle overflow
 workers are kept around.
 
+### Inactivity timeout
+
+Pools can be configured to shut down automatically after a period with no
+active checkouts. This is useful for dynamically started pools that should
+clean up after themselves. Set the `inactivity_timeout` pool option (in
+milliseconds) to enable this. Disabled by default.
+
+Note: this is different from `idle_timeout`, which controls how long
+individual *overflow workers* are kept around before being dismissed.
+`inactivity_timeout` shuts down the *entire pool* when no workers are checked
+out.
+
 ### Hot code reload compatibility
 
 Each pool now runs under a proper OTP supervision tree, making it compatible
@@ -24,7 +36,7 @@ with hot code upgrades and standard OTP release tooling.
 
 - `poolboy:start/1,2` has been removed. Use `poolboy:start_link/2`.
 - Pools now require a name.
-- Requires OTP 21+.
+- Requires OTP 24+.
 
 ## Usage
 
@@ -182,6 +194,8 @@ code_change(_OldVsn, State, _Extra) ->
   when the process that checked it out dies. `checkin` returns the worker to the
   pool for reuse; `kill` terminates the worker and lets the supervisor start a
   fresh replacement. Default is `checkin`.
+- `inactivity_timeout`: time in milliseconds after which a pool with no active
+  checkouts shuts down. Disabled (`false`) by default.
 
 ## Authors
 
