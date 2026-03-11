@@ -37,23 +37,27 @@
     reclaim_strategy = checkin :: checkin | kill
 }).
 
--spec checkout(Pool :: pool()) -> pid().
+-spec checkout(Pool :: pool()) -> {ok, pid()} | {error, full | timeout}.
 checkout(Pool) ->
     checkout(Pool, true, ?DEFAULT_TIMEOUT).
 
--spec checkout(Pool :: pool(), Block :: boolean()) -> pid() | full;
-              (Pool :: pool(), Timeout :: timeout()) -> pid() | full.
+-spec checkout(Pool :: pool(), Block :: boolean()) -> {ok, pid()} | {error, full | timeout};
+              (Pool :: pool(), Timeout :: timeout()) -> {ok, pid()} | {error, full | timeout}.
 checkout(Pool, Timeout) when is_integer(Timeout); Timeout =:= infinity ->
     checkout(Pool, true, Timeout);
 checkout(Pool, Block) when is_boolean(Block) ->
     checkout(Pool, Block, ?DEFAULT_TIMEOUT).
 
 -spec checkout(Pool :: pool(), Block :: boolean(), Timeout :: timeout())
-    -> pid() | full.
+    -> {ok, pid()} | {error, timeout | full}.
 checkout(Pool, Block, Timeout) ->
     try
         gen_server:call(Pool, {checkout, Block}, Timeout)
     catch
+        exit:{timeout, _}:_Stacktrace ->
+            gen_server:cast(Pool, {cancel_waiting, self()}),
+            {error, timeout};
+
         Class:Reason:Stacktrace ->
             gen_server:cast(Pool, {cancel_waiting, self()}),
             erlang:raise(Class, Reason, Stacktrace)
@@ -69,13 +73,18 @@ transaction(Pool, Fun) ->
     transaction(Pool, Fun, ?DEFAULT_TIMEOUT).
 
 -spec transaction(Pool :: pool(), Fun :: fun((Worker :: pid()) -> any()),
-    Timeout :: timeout()) -> any().
+    Timeout :: timeout()) -> {ok, any()} | {error, full | timeout}.
 transaction(Pool, Fun, Timeout) ->
-    Worker = poolboy:checkout(Pool, true, Timeout),
-    try
-        Fun(Worker)
-    after
-        ok = poolboy:checkin(Pool, Worker)
+    case poolboy:checkout(Pool, true, Timeout) of
+        {ok, Worker} ->
+            try
+                {ok, Fun(Worker)}
+            after
+                ok = poolboy:checkin(Pool, Worker)
+            end;
+
+        {error, _} = Error ->
+            Error
     end.
 
 -spec child_spec(PoolId :: term(), PoolArgs :: proplists:proplist())
@@ -180,13 +189,13 @@ handle_call({checkout, Block}, {FromPid, _} = From, State) ->
                 end,
             MRef = erlang:monitor(process, FromPid),
             true = ets:insert(Monitors, {Pid, FromPid, MRef}),
-            {reply, Pid, cancel_inactivity_timer(State#state{workers = Left, idle_workers = NewIdleWorkers, overflow = NewOverflow})};
+            {reply, {ok, Pid}, cancel_inactivity_timer(State#state{workers = Left, idle_workers = NewIdleWorkers, overflow = NewOverflow})};
         [] when MaxOverflow > 0, Overflow + map_size(IdleWorkers) < MaxOverflow ->
             {Pid, MRef} = new_worker(Sup, FromPid),
             true = ets:insert(Monitors, {Pid, FromPid, MRef}),
-            {reply, Pid, cancel_inactivity_timer(State#state{overflow = Overflow + 1})};
+            {reply, {ok, Pid}, cancel_inactivity_timer(State#state{overflow = Overflow + 1})};
         [] when Block =:= false ->
-            {reply, full, State};
+            {reply, {error, full}, State};
         [] ->
             MRef = erlang:monitor(process, FromPid),
             Waiting = queue:in({From, FromPid, MRef}, State#state.waiting),
@@ -341,7 +350,7 @@ handle_checkin(Pid, State) ->
     case queue:out(Waiting) of
         {{value, {From, CRef, MRef}}, Left} ->
             true = ets:insert(Monitors, {Pid, CRef, MRef}),
-            gen_server:reply(From, Pid),
+            gen_server:reply(From, {ok, Pid}),
             State#state{waiting = Left};
         {empty, Empty} when Overflow > 0 ->
             Timer = erlang:send_after(State#state.idle_timeout, self(), {dismiss_idle, Pid}),
@@ -371,7 +380,7 @@ handle_worker_exit(Pid, State) ->
         {{value, {From, CRef, MRef}}, Left} ->
             NewWorker = new_worker(State#state.supervisor),
             true = ets:insert(Monitors, {NewWorker, CRef, MRef}),
-            gen_server:reply(From, NewWorker),
+            gen_server:reply(From, {ok, NewWorker}),
             State#state{waiting = Left, idle_workers = NewIdleWorkers};
         {empty, Left} when Overflow > 0 ->
             State#state{overflow = Overflow - 1, waiting = Left, idle_workers = NewIdleWorkers};
