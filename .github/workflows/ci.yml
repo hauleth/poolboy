@@ -24,6 +24,23 @@ jobs:
 
       - run: rebar3 eunit
 
+  format:
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        otp-version: ['25', '26', '27', '28']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: ${{ matrix.otp-version }}
+          rebar3-version: '3.24'
+
+      - run: rebar3 fmt --check
+
   dialyzer:
     runs-on: ubuntu-latest
 
