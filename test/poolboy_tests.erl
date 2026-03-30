@@ -12,7 +12,7 @@ pool_test_() ->
                 undefined ->
                     ok;
                 Pid ->
-                    catch pool_call(Pid, stop),
+                    catch poolboy:stop(Pid),
                     wait_for_exit(Pid)
             end,
             error_logger:tty(true)
@@ -94,7 +94,7 @@ checkin_worker(Pid, Worker) ->
 
 transaction_timeout_without_exit() ->
     {ok, Pid} = new_pool(1, 0),
-    ?assertEqual({ready, 1, 0, 0}, pool_call(Pid, status)),
+    ?assertEqual({ready, 1, 0, 0}, poolboy:status(Pid)),
     WorkerList = pool_call(Pid, get_all_workers),
     ?assertMatch([_], WorkerList),
     spawn(poolboy, transaction, [
@@ -106,11 +106,11 @@ transaction_timeout_without_exit() ->
     ]),
     timer:sleep(100),
     ?assertEqual(WorkerList, pool_call(Pid, get_all_workers)),
-    ?assertEqual({ready, 1, 0, 0}, pool_call(Pid, status)).
+    ?assertEqual({ready, 1, 0, 0}, poolboy:status(Pid)).
 
 transaction_timeout() ->
     {ok, Pid} = new_pool(1, 0),
-    ?assertEqual({ready, 1, 0, 0}, pool_call(Pid, status)),
+    ?assertEqual({ready, 1, 0, 0}, poolboy:status(Pid)),
     WorkerList = pool_call(Pid, get_all_workers),
     ?assertMatch([_], WorkerList),
     ?assertMatch(
@@ -124,7 +124,7 @@ transaction_timeout() ->
         )
     ),
     ?assertEqual(WorkerList, pool_call(Pid, get_all_workers)),
-    ?assertEqual({ready, 1, 0, 0}, pool_call(Pid, status)).
+    ?assertEqual({ready, 1, 0, 0}, poolboy:status(Pid)).
 
 pool_missing_name() ->
     ?assertEqual(
@@ -371,7 +371,7 @@ pool_full_nonblocking() ->
     ?assert(is_pid(NewWorker)),
     ?assertEqual({error, full}, poolboy:checkout(Pid, false)),
     ?assertEqual(10, length(pool_call(Pid, get_all_monitors))),
-    ok = pool_call(Pid, stop).
+    ok = poolboy:stop(Pid).
 
 owner_death() ->
     %% Check that a dead owner (a process that dies with a worker checked out)
@@ -387,7 +387,7 @@ owner_death() ->
     ?assertEqual(5, length(pool_call(Pid, get_avail_workers))),
     ?assertEqual(5, length(pool_call(Pid, get_all_workers))),
     ?assertEqual(0, length(pool_call(Pid, get_all_monitors))),
-    ok = pool_call(Pid, stop).
+    ok = poolboy:stop(Pid).
 
 owner_death_kill_reclaim_strategy() ->
     %% Check that a dead owner causes the pool to kill the worker and replace
@@ -414,7 +414,7 @@ owner_death_kill_reclaim_strategy() ->
     ?assertEqual(5, length(pool_call(Pid, get_avail_workers))),
     ?assertEqual(5, length(pool_call(Pid, get_all_workers))),
     ?assertEqual(0, length(pool_call(Pid, get_all_monitors))),
-    ok = pool_call(Pid, stop).
+    ok = poolboy:stop(Pid).
 
 checkin_after_exception_in_transaction() ->
     {ok, Pool} = new_pool(2, 0),
@@ -431,7 +431,7 @@ checkin_after_exception_in_transaction() ->
         throw:it_on_the_ground -> ok
     end,
     ?assertEqual(2, length(pool_call(Pool, get_avail_workers))),
-    ok = pool_call(Pool, stop).
+    ok = poolboy:stop(Pool).
 
 pool_returns_status() ->
     {ok, Pool} = new_pool(2, 0),
@@ -440,7 +440,7 @@ pool_returns_status() ->
     ?assertEqual({ready, 1, 0, 1}, poolboy:status(Pool)),
     {ok, _} = poolboy:checkout(Pool),
     ?assertEqual({full, 0, 0, 2}, poolboy:status(Pool)),
-    ok = pool_call(Pool, stop),
+    ok = poolboy:stop(Pool),
 
     {ok, Pool2} = new_pool(1, 1),
     ?assertEqual({ready, 1, 0, 0}, poolboy:status(Pool2)),
@@ -448,7 +448,7 @@ pool_returns_status() ->
     ?assertEqual({overflow, 0, 0, 1}, poolboy:status(Pool2)),
     {ok, _} = poolboy:checkout(Pool2),
     ?assertEqual({full, 0, 1, 2}, poolboy:status(Pool2)),
-    ok = pool_call(Pool2, stop),
+    ok = poolboy:stop(Pool2),
 
     {ok, Pool3} = new_pool(0, 2),
     ?assertEqual({overflow, 0, 0, 0}, poolboy:status(Pool3)),
@@ -456,11 +456,11 @@ pool_returns_status() ->
     ?assertEqual({overflow, 0, 1, 1}, poolboy:status(Pool3)),
     {ok, _} = poolboy:checkout(Pool3),
     ?assertEqual({full, 0, 2, 2}, poolboy:status(Pool3)),
-    ok = pool_call(Pool3, stop),
+    ok = poolboy:stop(Pool3),
 
     {ok, Pool4} = new_pool(0, 0),
     ?assertEqual({full, 0, 0, 0}, poolboy:status(Pool4)),
-    ok = pool_call(Pool4, stop).
+    ok = poolboy:stop(Pool4).
 
 demonitors_previously_waiting_processes() ->
     {ok, Pool} = new_pool(1, 0),
@@ -483,7 +483,7 @@ demonitors_previously_waiting_processes() ->
     timer:sleep(500),
     ?assertEqual(0, length(get_monitors(Pool))),
     Pid ! ok,
-    ok = pool_call(Pool, stop).
+    ok = poolboy:stop(Pool).
 
 demonitors_when_checkout_cancelled() ->
     {ok, Pool} = new_pool(1, 0),
@@ -503,7 +503,7 @@ demonitors_when_checkout_cancelled() ->
     end,
     ?assertEqual(1, length(get_monitors(Pool))),
     Pid ! ok,
-    ok = pool_call(Pool, stop).
+    ok = poolboy:stop(Pool).
 
 default_strategy_lifo() ->
     %% Default strategy is LIFO
@@ -547,7 +547,7 @@ reuses_waiting_monitor_on_worker_exit() ->
     ?assertEqual(1, length(get_monitors(Pool))),
 
     Pid ! ok,
-    ok = pool_call(Pool, stop).
+    ok = poolboy:stop(Pool).
 
 idle_worker_timeout() ->
     {ok, Pid} = new_pool_with_idle_timeout(2, 2, 2500),
@@ -578,7 +578,7 @@ idle_worker_timeout() ->
     %% C and D should now be available
     assert_avail_workers_exactly(Pid, [C, D]),
 
-    ok = pool_call(Pid, stop).
+    ok = poolboy:stop(Pid).
 
 idle_worker_reuse() ->
     {ok, Pid} = new_pool_with_idle_timeout(2, 2, 5000),
@@ -601,7 +601,7 @@ idle_worker_reuse() ->
 
     checkin_worker(Pid, NewWorker),
     lists:foreach(fun(W) -> checkin_worker(Pid, W) end, Rest),
-    ok = pool_call(Pid, stop).
+    ok = poolboy:stop(Pid).
 
 idle_worker_timer_cancellation() ->
     {ok, Pid} = new_pool_with_idle_timeout(1, 2, 3000),
@@ -629,7 +629,7 @@ idle_worker_timer_cancellation() ->
     assert_idle_workers_exactly(Pid, [ReuseWorker]),
 
     lists:foreach(fun(W) -> checkin_worker(Pid, W) end, Rest),
-    ok = pool_call(Pid, stop).
+    ok = poolboy:stop(Pid).
 
 multiple_idle_workers() ->
     {ok, Pid} = new_pool_with_idle_timeout(2, 3, 3000),
@@ -671,7 +671,7 @@ multiple_idle_workers() ->
     assert_idle_workers_exactly(Pid, []),
 
     lists:foreach(fun(W) -> checkin_worker(Pid, W) end, Rest),
-    ok = pool_call(Pid, stop).
+    ok = poolboy:stop(Pid).
 
 idle_worker_no_overflow() ->
     {ok, Pid} = new_pool_with_idle_timeout(2, 0, 2000),
@@ -693,7 +693,7 @@ idle_worker_no_overflow() ->
     assert_all_workers_exactly(Pid, Workers),
     assert_idle_workers_exactly(Pid, []),
 
-    ok = pool_call(Pid, stop).
+    ok = poolboy:stop(Pid).
 
 idle_worker_pool_shutdown() ->
     {ok, Pid} = new_pool_with_idle_timeout(2, 2, 10000),
@@ -707,7 +707,7 @@ idle_worker_pool_shutdown() ->
     assert_all_workers_exactly(Pid, Workers),
 
     lists:foreach(fun(W) -> checkin_worker(Pid, W) end, Rest),
-    ok = pool_call(Pid, stop).
+    ok = poolboy:stop(Pid).
 
 idle_worker_dies_while_idle() ->
     {ok, Pid} = new_pool_with_idle_timeout(2, 2, 5000),
@@ -733,7 +733,7 @@ idle_worker_dies_while_idle() ->
     assert_idle_workers_exactly(Pid, [B]),
 
     lists:foreach(fun(W) -> checkin_worker(Pid, W) end, Rest),
-    ok = pool_call(Pid, stop).
+    ok = poolboy:stop(Pid).
 
 process_dies_holding_overflow_worker() ->
     {ok, Pid} = new_pool_with_idle_timeout(2, 2, 5000),
@@ -766,7 +766,7 @@ process_dies_holding_overflow_worker() ->
     assert_idle_workers_exactly(Pid, [OverflowWorker]),
 
     [checkin_worker(Pid, Worker) || Worker <- [A, B, C]],
-    ok = pool_call(Pid, stop).
+    ok = poolboy:stop(Pid).
 
 process_dies_holding_overflow_worker_kill_reclaim() ->
     %% With kill reclaim strategy, the overflow worker should be terminated
@@ -807,7 +807,7 @@ process_dies_holding_overflow_worker_kill_reclaim() ->
     ?assertEqual(3, length(pool_call(Pid, get_all_monitors))),
 
     [checkin_worker(Pid, Worker) || Worker <- [A, B, C]],
-    ok = pool_call(Pid, stop).
+    ok = poolboy:stop(Pid).
 
 process_links_to_worker_then_crashes() ->
     {ok, Pid} = new_pool_with_idle_timeout(2, 2, 5000),
@@ -854,7 +854,7 @@ process_links_to_worker_then_crashes() ->
 
     checkin_worker(Pid, A),
     checkin_worker(Pid, B),
-    ok = pool_call(Pid, stop).
+    ok = poolboy:stop(Pid).
 
 inactivity_timeout_basic() ->
     {ok, Pid} = new_pool_with_inactivity_timeout(2, 0, 500),
@@ -908,7 +908,7 @@ inactivity_timeout_disabled_by_default() ->
     PoolPid = whereis(Pid),
     timer:sleep(1000),
     ?assert(is_process_alive(PoolPid)),
-    ok = pool_call(Pid, stop).
+    ok = poolboy:stop(Pid).
 
 inactivity_timeout_with_overflow() ->
     {ok, Pid} = new_pool_with_inactivity_timeout(1, 2, 500),
